@@ -327,7 +327,7 @@ def resolver(estado, fee_pct=0.0):
             f"Bin {act['bin_titulo']} · {act['lado']} · ganador real {winner_titulo}\n"
             f"Stake ${act['stake']:.2f} · saldo bot ${estado['saldo']:.2f}\n"
             f"{saldo_ntfy.saldo_real_texto()}",
-            titulo="[V2-SEMANAL] 💰 Apuesta REAL cerrada",
+            titulo="[SEMANAL] 💰 Apuesta REAL cerrada",
             etiqueta="white_check_mark" if res == "G" else "x")
     except Exception:
         pass
@@ -367,7 +367,7 @@ def abrir(estado, dry=False, actualizar=False):
     c = candidatas[0]
 
     # ---- salvaguardas
-    if c["paso"] > 7:
+    if estado["paso"] > 7:
         print("  [BLOQUEADO] paso > 7: stop de ciclo. Reinicia el ciclo.")
         return False
     fee = cfg.get("fee_pct", 0.0)
@@ -485,9 +485,9 @@ def abrir(estado, dry=False, actualizar=False):
             f"💰 ORDEN {'SIMULADA' if dry else 'REAL'} enviada\n"
             f"Mercado: {c['slug']}\nBin {c['bin_titulo']} · {c['lado']} "
             f"@ {c['precio']:.3f} (cuota {c['cuota']:.2f})\n"
-            f"Paso {estado['paso']} · stake ${c['stake']:.2f}"
-            f"{saldo_ntfy.saldo_real_texto()}\n",
-            titulo="[V2-SEMANAL] 💰 Apuesta REAL abierta",
+            f"Paso {estado['paso']} · stake ${c['stake']:.2f}\n"
+            f"{saldo_ntfy.saldo_real_texto()}",
+            titulo="[SEMANAL] 💰 Apuesta REAL abierta",
             etiqueta="moneybag")
     except Exception:
         pass
@@ -539,7 +539,12 @@ def probar_orden():
     except Exception:
         print("  (sin mercado_activo.json: ejecuta primero el bot en papel)")
         return
-        activo = next((m for m in mercados if not m["cerrado"] and m["tipo"] == "semanal" and m.get("fin_iso") and datetime.fromisoformat(m["fin_iso"]) > datetime.now(timezone.utc)), None)
+    ahora = datetime.now(timezone.utc)
+    activo = next((m for m in mercados
+                   if not m["cerrado"] and m["tipo"] == "semanal"
+                   and m.get("fin_iso")
+                   and datetime.fromisoformat(m["fin_iso"]) > ahora), None)
+
     if not activo:
         print("  (no hay mercado semanal abierto ahora mismo)")
         return
