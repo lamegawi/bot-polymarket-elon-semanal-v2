@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Espera escalonada (no saturar fuentes)
-        shell: pwsh
+        shell: powershell
         run: |
           Write-Host "Esperando 360s para escalonar arranques..."
           Start-Sleep -Seconds 360
