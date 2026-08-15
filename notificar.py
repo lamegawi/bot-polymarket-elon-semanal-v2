@@ -105,7 +105,7 @@ def enviar(mensaje, titulo=None, etiqueta=None, prioridad="normal"):
     return resultados
 
 
-def apuesta_abierta(act, saldo, prefijo=""):
+def apuesta_abierta(act, saldo):
     """Notificación cuando se abre una apuesta de papel."""
     mensaje = (
         f"📈 APUESTA ABIERTA (paper trading)\n"
@@ -116,11 +116,11 @@ def apuesta_abierta(act, saldo, prefijo=""):
         f"Stake: ${act['stake']:.2f} · Saldo bot: ${saldo:.2f}\n"
         f"{saldo_ntfy.saldo_real_texto()}"
     )
-    return enviar(mensaje, titulo=f"{prefijo}🟢 Nueva apuesta abierta",
+    return enviar(mensaje, titulo="🟢 Nueva apuesta abierta",
                   etiqueta="chart_with_upwards_trend")
 
 
-def apuesta_cerrada(reg, saldo, prefijo=""):
+def apuesta_cerrada(reg, saldo):
     """Notificación cuando se cierra una apuesta de papel con su resultado."""
     if reg["resultado"] == "G":
         cabecera = f"✅ GANADA  +${reg['beneficio']:.2f}"
@@ -136,7 +136,7 @@ def apuesta_cerrada(reg, saldo, prefijo=""):
         f"Saldo bot: ${saldo:.2f}\n"
         f"{saldo_ntfy.saldo_real_texto()}"
     )
-    return enviar(mensaje, titulo=f"{prefijo}🔔 Apuesta cerrada", etiqueta=etiqueta)
+    return enviar(mensaje, titulo="🔔 Apuesta cerrada", etiqueta=etiqueta)
 
 
 def estado_texto():
@@ -227,7 +227,8 @@ def casi_senal(evaluados, horas=6):
             f"Bin {b['titulo']} · lado {lado} · p_modelo {p:.0%}\n"
             f"Cuota YES {cy:.2f} · NO {cn:.2f}\n"
             f"Falta: {falta}\n"
-            f"🔗 {enlace}"
+            f"🔗 {enlace}\n"
+            f"{saldo_ntfy.saldo_real_texto()}"
         )
         enviar(mensaje, titulo="👀 Casi señal (sin apuesta)",
                etiqueta="eyes", prioridad="default")
@@ -275,7 +276,7 @@ def resumen_diario(saldo, paso, historial, apuesta_activa=None,
         nombres = ", ".join(
             (m["titulo"].replace("Elon Musk # tweets ", "").replace("?", ""))
             for m in mercados_48h[:2])
-        lineas.append(f"🕐 Mercados semanales abiertos: {len(mercados_48h)} ({nombres})")
+        lineas.append(f"🕐 Mercados 48 h abiertos: {len(mercados_48h)} ({nombres})")
     if metricas:
         lineas.append(f"📈 AVG7 {metricas.get('avg7', 0):.1f} · V2 {metricas.get('v2', 0)} · "
                       f"R {metricas.get('r', 0):.2f} · λ48 {metricas.get('lam48', 0):.1f}")
