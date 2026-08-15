@@ -3,20 +3,23 @@
 """
 SEÑAL EN VIVO — integra los datos de tweets + los precios de Polymarket
 =======================================================================
-Flujo completo y automático:
+Flujo completo y automático (ventana MENSUAL):
   1) (opcional) refresca los datos de tweets (recoger_tweets.py --fuente jina)
-  2) calcula AVG7 / V2 / R / λ48 desde datos_elon.csv (o usa overrides)
+  2) calcula AVG7 / V2 / R / λ desde datos_elon.csv (o usa overrides)
   3) descarga (o carga) los mercados activos de Polymarket y sus bins
-  4) calcula p_modelo (Poisson) para cada bin, aplica las reglas R1-R7
-     y da el veredicto: APOSTAR YES / APOSTAR NO / PASAR + stake del ciclo
+  4) calcula p_modelo (Poisson) para cada bin, aplica las reglas de la
+     ventana (tabla + regla propios de senal.py) y da el veredicto:
+     APOSTAR YES / APOSTAR NO / PASAR + stake del ciclo
+
+La λ restante es SIEMPRE la misma por construcción:
+    λ_rest = AVG7 × ajuste × horas_restantes / 24
+(equivale a λ48×h/48, λ7×h/168 y λ30×h/744 — solo cambia la etiqueta).
 
 USO:
   python3 senal_vivo.py                     # señal con datos actuales
   python3 senal_vivo.py --actualizar        # + refrescar precios Polymarket
   python3 senal_vivo.py --recoger           # + refrescar tweets
   python3 senal_vivo.py --paso 2            # paso actual del ciclo (stake)
-  python3 senal_vivo.py --avg7 27 --v2 50   # override (pruebas / datos de
-                                            # referencia de la semana resuelta)
 """
 import argparse
 import json
@@ -40,13 +43,47 @@ T_FMT = "%a %b %d %H:%M:%S +0000 %Y"
 
 
 def conteo_ventana(inicio_utc, ahora_utc):
-    """T0: tweets recogidos dentro de la ventana del mercado (dato PARCIAL
-    hasta que el loop tenga cobertura continua de 24 h)."""
+    """T0 = tweets dentro de la ventana del mercado.
+
+    Estrategia robusta (especialmente para la ventana MENSUAL):
+      · días COMPLETOS estrictamente dentro de la ventana → datos_elon.csv
+        (el CSV solo guarda días terminados: fecha < hoy)
+      · día de inicio y día actual (parciales) → estado_tweets.json
+        (timestamps exactos), SIN duplicar el día de inicio si la ventana
+        empieza a las 00:00 ET (caso mensual, ya cubierto por el CSV).
+    Así un bot que arranca a mitad de mes cuenta bien el mes desde el día 1.
+    Devuelve (n, total_estado)."""
     try:
         estado = json.load(open("estado_tweets.json", encoding="utf-8")).get("tweets", {})
     except Exception:
-        return 0, 0
+        estado = {}
+    total = len(estado)
+    ahora_et = ahora_utc.astimezone(ET)
+    inicio_et = inicio_utc.astimezone(ET)
+    hoy = ahora_et.date()
+    d_inicio = inicio_et.date()
+    incluye_dia_inicio = (inicio_et.hour == 0 and inicio_et.minute == 0)
     n = 0
+    # ---- días completos (datos_elon.csv): d_inicio < d < hoy, o d == d_inicio
+    # ---- si la ventana empieza a las 00:00 (mes natural)
+    try:
+        import csv as _csv
+        with open("datos_elon.csv", newline="", encoding="utf-8") as f:
+            for fila in _csv.DictReader(f):
+                try:
+                    d = datetime.strptime(fila["fecha"].strip(), "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                if d >= hoy:
+                    continue
+                if d > d_inicio or (incluye_dia_inicio and d == d_inicio):
+                    try:
+                        n += int(float(fila["tweets"]))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    # ---- día de inicio / día actual (parciales) con timestamps exactos
     for v in estado.values():
         if v.get("kind") == "repost" and not v.get("exacto"):
             continue  # repost de xcancel sin hora exacta
@@ -54,9 +91,14 @@ def conteo_ventana(inicio_utc, ahora_utc):
             ts = datetime.strptime(v["created_at"], T_FMT).replace(tzinfo=timezone.utc)
         except Exception:
             continue
+        d_ts = ts.astimezone(ET).date()
+        if d_ts not in (d_inicio, hoy):
+            continue
+        if d_ts == d_inicio and incluye_dia_inicio:
+            continue  # ese día ya se contó completo vía CSV
         if inicio_utc <= ts <= ahora_utc:
             n += 1
-    return n, len(estado)
+    return n, total
 
 
 def evaluar(avg7, v2, ajuste, lam48, mercados, paso, t0_override=-1, ahora=None):
@@ -65,7 +107,7 @@ def evaluar(avg7, v2, ajuste, lam48, mercados, paso, t0_override=-1, ahora=None)
       lam_rest, t0, bins:[{titulo, lo, hi, precio_yes, cuota_yes, cuota_no,
       p_modelo, veredicto}]}
     - candidatas: lista de dicts {mercado, bin, lado, precio, cuota, p_modelo}
-      que cumplen las reglas R3+R4 (para abrir apuesta de papel)."""
+      que cumplen las reglas de senal.decidir_bin (para abrir apuesta)."""
     ahora = ahora or datetime.now(timezone.utc)
     tabla = senal.tabla_apuestas()
     _, stake, _, _ = tabla[paso - 1] if 1 <= paso <= len(tabla) else tabla[0]
@@ -78,12 +120,9 @@ def evaluar(avg7, v2, ajuste, lam48, mercados, paso, t0_override=-1, ahora=None)
         if ahora < inicio or ahora > fin:
             continue
         horas_rest = (fin - ahora).total_seconds() / 3600
-        if mk["tipo"] == "48h":
-            lam_rest = lam48 * max(0.0, horas_rest) / 48.0
-        elif mk["tipo"] == "semanal":
-            lam_rest = 7 * avg7 * ajuste * max(0.0, horas_rest) / 168.0
-        else:
-            lam_rest = lam48 * max(0.0, horas_rest) / 48.0
+        # λ restante = tasa diaria × horas restantes / 24 (igual para 48h,
+        # semanal y mensual: solo cambia la etiqueta informativa)
+        lam_rest = avg7 * ajuste * max(0.0, horas_rest) / 24.0
         t0_auto, total_estado = conteo_ventana(inicio, ahora)
         t0 = t0_override if t0_override >= 0 else t0_auto
         bins = []
@@ -91,11 +130,7 @@ def evaluar(avg7, v2, ajuste, lam48, mercados, paso, t0_override=-1, ahora=None)
             hi = b["hi"] if b["hi"] != float("inf") else math.inf
             p = senal.p_bin(b["lo"] - t0, (hi - t0) if hi != math.inf else math.inf, lam_rest)
             cy, cn = b["cuota_yes"], b["cuota_no"]
-            veredicto, lado = "PASAR", None
-            if p >= senal.P_MIN_YES and cy and cy >= senal.CUOTA_MINIMA:
-                veredicto, lado = "APOSTAR YES", "YES"
-            elif p <= senal.P_MAX_NO and cn and cn >= senal.CUOTA_MINIMA:
-                veredicto, lado = "APOSTAR NO", "NO"
+            veredicto, lado, _ = senal.decidir_bin(p, b["precio_yes"], cy, cn)
             bins.append({"titulo": b["titulo"], "lo": b["lo"], "hi": b["hi"],
                          "precio_yes": b["precio_yes"], "cuota_yes": cy,
                          "cuota_no": cn, "p_modelo": p, "veredicto": veredicto})
@@ -113,15 +148,14 @@ def evaluar(avg7, v2, ajuste, lam48, mercados, paso, t0_override=-1, ahora=None)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Señal en vivo Polymarket · @elonmusk")
+    ap = argparse.ArgumentParser(description="Señal en vivo Polymarket · @elonmusk (mensual)")
     ap.add_argument("--csv", default="datos_elon.csv", help="CSV de tweets (por defecto datos_elon.csv)")
     ap.add_argument("--actualizar", action="store_true", help="refrescar precios de Polymarket")
     ap.add_argument("--recoger", action="store_true", help="refrescar datos de tweets primero")
-    ap.add_argument("--paso", type=int, default=1, help="paso actual del ciclo (1-7)")
+    ap.add_argument("--paso", type=int, default=1, help="paso actual del ciclo (1-5)")
     ap.add_argument("--avg7", type=float, default=None, help="override AVG7 (pruebas)")
     ap.add_argument("--v2", type=float, default=None, help="override V2 (pruebas)")
     ap.add_argument("--t0", type=int, default=-1, help="override tweets ya publicados en la ventana (-1 = automático)")
-    ap.add_argument("--sin-reposts", action="store_true", help="excluir reposts")
     args = ap.parse_args()
 
     # ---------------------------------------------------------- 1) tweets
@@ -142,14 +176,15 @@ def main():
             datos = senal.cargar_csv(args.csv)
         except SystemExit as e:
             print(f"  ERROR: {e}")
-            print("  Usa --avg7 X --v2 Y con datos de referencia (p. ej. del último")
-            print("  mercado semanal resuelto) o espera a tener ≥ 9 días de datos.")
+            print("  Usa --avg7 X --v2 Y con datos de referencia o espera a tener ≥ 9 días de datos.")
             return
         m = senal.metricas(datos)
         avg7, v2, r, ajuste, lam48 = m["avg7"], m["v2"], m["r"], m["ajuste"], m["lam48"]
         origen = f"datos propios ({len(datos)} días)"
+    lam_mes = avg7 * {"48h": 2.0, "semanal": 7.0, "mensual": 30.4}.get(senal.VENTANA, 30.4) * ajuste
+    etiq_ref = {"48h": "48 h", "semanal": "semana", "mensual": "mes"}.get(senal.VENTANA, senal.VENTANA)
     print(f"  AVG7 = {avg7:.2f} · V2 = {v2} · R = {r:.3f} · ajuste = {ajuste:.3f} · "
-          f"λ48 = {lam48:.1f}   [{origen}]")
+          f"λ {etiq_ref} ≈ {lam_mes:.0f}   [{origen}]")
 
     # ---------------------------------------------------------- 3) mercado
     print("[3/4] Mercados Polymarket…")
@@ -178,8 +213,7 @@ def main():
         print(f"  ventana: {ev['inicio'].astimezone(ET).strftime('%m-%d %H:%M %Z')} → "
               f"{ev['fin'].astimezone(ET).strftime('%m-%d %H:%M %Z')}  ·  "
               f"ahora: {ahora.astimezone(ET).strftime('%m-%d %H:%M %Z')}")
-        etiq = f"λ48={lam48:.1f}" if ev['tipo'] == "48h" else f"λ7={7*avg7*ajuste:.1f}"
-        print(f"  {etiq} → λ restante={ev['lam_rest']:.1f} · horas restantes: {ev['horas_rest']:.1f} "
+        print(f"  λ restante={ev['lam_rest']:.1f} · horas restantes: {ev['horas_rest']:.1f} "
               f"· tweets ya en ventana (T0): {ev['t0']}")
         print(f"  {'bin':<10}{'p_modelo':>10}{'precio':>9}{'cuotaY':>8}{'cuotaN':>8}   veredicto")
         for b in ev["bins"]:
@@ -189,8 +223,8 @@ def main():
                 b['titulo'], b['p_modelo'], b['precio_yes'], cy, cn, b['veredicto']))
         print()
     if not candidatas:
-        print("► VEREDICTO GLOBAL: PASAR — ningún bin cumple (p_modelo ≥ 60% o ≤ 30%) "
-              "con cuota ≥ 3.00.")
+        print("► VEREDICTO GLOBAL: PASAR — ningún bin cumple las reglas de la ventana "
+              f"mensual (ventaja ≥ {senal.EDGE_MIN:.0%}pp y cuota ≥ {senal.CUOTA_MINIMA:.2f}).")
         print("  La regla es no apostar: la paciencia es parte de la estrategia.")
     else:
         print("► VEREDICTO GLOBAL: hay apuesta candidata (ver tabla). Recuerda:")
