@@ -327,7 +327,7 @@ def resolver(estado, fee_pct=0.0):
             f"Bin {act['bin_titulo']} · {act['lado']} · ganador real {winner_titulo}\n"
             f"Stake ${act['stake']:.2f} · saldo bot ${estado['saldo']:.2f}\n"
             f"{saldo_ntfy.saldo_real_texto()}",
-            titulo="[SEMANAL] 💰 Apuesta REAL cerrada",
+            titulo="[V2-SEMANAL] 💰 Apuesta REAL cerrada",
             etiqueta="white_check_mark" if res == "G" else "x")
     except Exception:
         pass
@@ -364,7 +364,13 @@ def abrir(estado, dry=False, actualizar=False):
     if not candidatas:
         print(f"  (sin señal semanal → no se abre apuesta real · paso {estado['paso']})")
         return False
-    c = candidatas[0]
+    # Elegir la MEJOR ventana entre TODAS las disponibles (mayor EV)
+    for _c in candidatas:
+        _p = _c["p_modelo"] if _c["lado"] == "YES" else (1 - _c["p_modelo"])
+        _c["_ev"] = round(_p * _c["cuota"], 3)
+    c = max(candidatas, key=lambda x: x["_ev"])
+    print(f"  · {len(candidatas)} ventana(s) con señal · elegida la de mayor EV: "
+          f"{c['bin_titulo']} {c['lado']} · EV {c['_ev']:.2f}")
 
     # ---- salvaguardas
     if estado["paso"] > 7:
@@ -487,7 +493,7 @@ def abrir(estado, dry=False, actualizar=False):
             f"@ {c['precio']:.3f} (cuota {c['cuota']:.2f})\n"
             f"Paso {estado['paso']} · stake ${c['stake']:.2f}\n"
             f"{saldo_ntfy.saldo_real_texto()}",
-            titulo="[SEMANAL] 💰 Apuesta REAL abierta",
+            titulo="[V2-SEMANAL] 💰 Apuesta REAL abierta",
             etiqueta="moneybag")
     except Exception:
         pass
